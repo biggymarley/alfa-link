@@ -6,6 +6,12 @@
 
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?style=for-the-badge)](https://claude.com/claude-code)
 
+### The story
+
+I bought an Alfa AWUS036AXML two years ago, plugged it into my Mac… and nothing. No macOS driver, and no way to write one on Apple Silicon. I searched for a workaround and found nothing that worked, so the adapter sat in a drawer.
+
+Then I tried Claude Code. In one session, from afternoon to night, it set up a Linux VM, got the adapter working inside it, and figured out the macOS networking quirks the hard way. When routes and proxies failed, it switched to a WireGuard tunnel. Then it built this dashboard and the installer. Two years of "not possible on a Mac", solved in a day.
+
 ---
 
 Use a **Linux-only USB Wi-Fi adapter** (like the **Alfa AWUS036AXML**) as the internet connection of an **Apple Silicon Mac** — for every app, not just the browser.
