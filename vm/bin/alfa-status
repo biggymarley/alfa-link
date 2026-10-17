@@ -47,4 +47,8 @@ if lines:
         f = lines[1].split("\t")
         wg.update(endpoint=f[2] if f[2] != "(none)" else None, handshake=int(f[4]), rx=int(f[5]), tx=int(f[6]))
 out["wg"] = wg
+try:
+    out["hotspot"] = json.loads(sh("alfa-hotspot status", timeout=6) or "{}")
+except ValueError:
+    out["hotspot"] = {}
 print(json.dumps(out))

@@ -12,7 +12,7 @@ apt-get install -y -qq "linux-modules-extra-$(uname -r)" linux-generic wireguard
   network-manager iw usbutils wireless-tools linux-firmware >/dev/null
 
 echo "== Helper commands"
-install -m755 bin/alfa-up bin/alfa-status bin/alfa-scan bin/alfa-connect /usr/local/bin/
+install -m755 bin/alfa-up bin/alfa-status bin/alfa-scan bin/alfa-connect bin/alfa-hotspot /usr/local/bin/
 
 echo "== Block the crashing MediaTek Bluetooth driver"
 install -m644 etc/no-bluetooth.conf /etc/modprobe.d/no-bluetooth.conf

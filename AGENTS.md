@@ -69,12 +69,35 @@ Each of these was a real failure during development.
 | 12 | After choosing a network, all other saved Wi-Fi profiles get `autoconnect no` (`alfa-connect`, `alfa-up`) | NetworkManager silently switches to another saved network when the chosen one drops |
 | 13 | Run `wg-quick` as `sudo $(brew --prefix)/bin/bash $(brew --prefix)/bin/wg-quick …` | Under sudo, `#!/usr/bin/env bash` may resolve to macOS bash 3.2, which wg-quick rejects |
 | 14 | `netplan apply` in the VM drops the current Wi-Fi connection | `setup-vm.sh` only applies when the file changed. Reconnect with `alfa-connect "<ssid>" </dev/null` (saved profile) afterwards |
+| 15 | The hotspot interface is **`ap0`**, and it must never be named `wl*` | Everything treats `wl*` as the upstream adapter: NAT (`oifname "wl*"`), `alfa-status`, `alfa-scan`, `alfa-connect`, `alfa-up` |
+| 16 | The hotspot runs on the **upstream channel** and is restarted after every network switch (`alfa-hotspot restart --if-active` in `alfa-connect`/`alfa-up`) | The MT7921 allows AP + managed on one radio, but a channel change upstream breaks the AP |
+| 17 | `alfa-hotspot` reports `on` only when NetworkManager says `activated` **and** `ap0` exists | NM lists the connection as active while it's still `activating`; acting on that raced start/stop |
+| 18 | nftables isolates hotspot clients: input only DHCP/DNS/ping from `ap0`; forward `ap0 → !wl*` dropped; nothing new into `ap0` | Without it, strangers on the hotspot could reach the Mac through `wg0`, the Mac's network through `en*`, or SSH into the VM |
 
 ## Known flaky area: USB passthrough of the Alfa
 
 - **If it won't attach** (`probe … error -5`, then `USB disconnect`, or stuck at `new high-speed USB device`): ask the user to **unplug and replug** the adapter, preferably into a USB 3 port. Then `utmctl usb connect alfa-vm 0E8D:7961`. If that still fails, quit and reopen UTM.
 - **`usbredir protocol parse error`** in UTM: same remedy.
 - **Don't** try `usbcore.quirks=0e8d:7961:k`; it was tested and doesn't help.
+
+## Hotspot (repeater)
+
+- **CLI, inside the VM:**
+  ```bash
+  echo "<password>" | alfa-hotspot on "AlfaLink"   # first start: name + password on stdin
+  alfa-hotspot on                                  # later: reuse the saved profile
+  alfa-hotspot off
+  alfa-hotspot status                              # JSON: on, state, ssid, channel, clients[{mac, ip, name, signal}]
+  ```
+  `alfa-status` embeds the same object under `"hotspot"`.
+- **How it works:** the NetworkManager profile `alfa-hotspot` uses `802-11-wireless.mode ap` and `ipv4.method shared` (dnsmasq gives DHCP/DNS on `10.77.0.0/24`).
+- **Testing:** use a throwaway random password. Afterwards run `alfa-hotspot off` and `sudo nmcli con delete alfa-hotspot`, so the user sets their own.
+- **The hotspot password is a user secret.** Same rules as Wi-Fi passwords.
+- **Checking capability for another chip:**
+  ```bash
+  iw phy <phy> info | sed -n "/valid interface combinations/,/^$/p"
+  ```
+  It needs `#{ AP } <= 1` with `total <= 2`.
 
 ## Safety rules
 

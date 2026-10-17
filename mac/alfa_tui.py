@@ -255,6 +255,62 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class HotspotScreen(ModalScreen[tuple[str, str] | None]):
+    """Hotspot name + password. Returns (name, password) or None."""
+
+    BINDINGS = [Binding("escape", "dismiss(None)", "Cancel")]
+
+    def __init__(self, name: str = "AlfaLink") -> None:
+        super().__init__()
+        self.default_name = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("Hotspot settings", id="dialog-title")
+            yield Label("Devices join this network to share the adapter's internet.", classes="muted")
+            yield Label("Name")
+            yield Input(value=self.default_name, id="hs-name", max_length=32)
+            yield Label("Password (8–63 characters, stored only in the VM)")
+            yield Input(password=True, id="hs-pw", placeholder="password")
+            yield Input(password=True, id="hs-pw2", placeholder="repeat password")
+            yield Label("", id="hs-error")
+            with Horizontal(classes="buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Start hotspot", variant="success", id="ok")
+
+    def on_mount(self) -> None:
+        self.query_one("#hs-pw", Input).focus()
+
+    def _submit(self) -> None:
+        name = self.query_one("#hs-name", Input).value.strip()
+        pw, pw2 = self.query_one("#hs-pw", Input).value, self.query_one("#hs-pw2", Input).value
+        err = self.query_one("#hs-error", Label)
+        if not name:
+            err.update(Text("Enter a name", style="red"))
+        elif not 8 <= len(pw) <= 63:
+            err.update(Text("Password must be 8–63 characters", style="red"))
+        elif pw != pw2:
+            err.update(Text("Passwords don't match", style="red"))
+        else:
+            self.dismiss((name, pw))
+
+    @on(Input.Submitted)
+    def submitted(self, event: Input.Submitted) -> None:
+        nxt = {"hs-name": "#hs-pw", "hs-pw": "#hs-pw2"}.get(event.input.id or "")
+        if nxt:
+            self.query_one(nxt, Input).focus()
+        else:
+            self._submit()
+
+    @on(Button.Pressed, "#ok")
+    def ok(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self) -> None:
+        self.dismiss(None)
+
+
 BANDS = {"all": "All", "2.4": "2.4 GHz", "5": "5 GHz", "6": "6 GHz"}
 
 
@@ -465,6 +521,8 @@ class AlfaLink(App):
     #charts { height: 7; margin: 0 1; }
     Chart { border: round #5f5f5f; padding: 0 1; width: 1fr; }
     Chart Sparkline { height: 1fr; }
+    #charts Card { width: 1fr; }
+    #hs-error { height: 1; }
     .chart-value { text-style: bold; }
     #log { border: round #5f5f5f; margin: 0 1; height: 1fr; }
     #dialog, #wifi { background: $panel; border: thick $primary; padding: 1 2; width: 64; height: auto; }
@@ -484,6 +542,8 @@ class AlfaLink(App):
     BINDINGS = [
         Binding("w", "wifi", "Wi-Fi"),
         Binding("t", "tunnel", "Tunnel on/off"),
+        Binding("h", "hotspot", "Hotspot on/off"),
+        Binding("H", "hotspot_settings", "Hotspot settings", show=False),
         Binding("a", "attach", "Attach adapter"),
         Binding("s", "vm_power", "Start/stop VM"),
         Binding("p", "public_ip", "Public IP"),
@@ -495,18 +555,20 @@ class AlfaLink(App):
         super().__init__()
         self.state = State()
         self.busy: set[str] = set()
+        self.hotspot_pending: str | None = None
 
     # layout
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(id="route")
         with Horizontal(id="actions"):
-            yield Button("Wi-Fi  (w)", id="b-wifi", variant="primary", action="app.wifi")
-            yield Button("Tunnel ON  (t)", id="b-tunnel", variant="success", action="app.tunnel")
-            yield Button("Attach adapter  (a)", id="b-attach", action="app.attach")
-            yield Button("Stop VM  (s)", id="b-vm", action="app.vm_power")
-            yield Button("Refresh  (r)", id="b-refresh", action="app.refresh")
-            yield Button("Quit  (q)", id="b-quit", variant="error", action="app.quit")
+            yield Button("Wi-Fi", id="b-wifi", variant="primary", action="app.wifi")
+            yield Button("Tunnel ON", id="b-tunnel", variant="success", action="app.tunnel")
+            yield Button("Hotspot ON", id="b-hotspot", action="app.hotspot")
+            yield Button("Attach adapter", id="b-attach", action="app.attach")
+            yield Button("Stop VM", id="b-vm", action="app.vm_power")
+            yield Button("Refresh", id="b-refresh", action="app.refresh")
+            yield Button("Quit", id="b-quit", variant="error", action="app.quit")
         with Grid(id="cards"):
             yield Card("VM", id="c-vm")
             yield Card("Adapter", action="app.wifi", hint="click → Wi-Fi", id="c-adapter")
@@ -516,6 +578,7 @@ class AlfaLink(App):
             yield Chart("Latency", "cyan", id="ch-lat")
             yield Chart("Download", "green", id="ch-down")
             yield Chart("Upload", "magenta", id="ch-up")
+            yield Card("Hotspot", action="app.hotspot", hint="click → on/off", id="c-hot")
         log = RichLog(id="log", markup=True, wrap=True)
         log.border_title = "Events"
         yield log
@@ -602,6 +665,10 @@ class AlfaLink(App):
         else:
             headline = Text("●  NOT CONNECTED   ", style="bold red")
         headline.append_text(route)
+        hs_state = v.get("hotspot") or {}
+        if hs_state.get("on"):
+            n = len(hs_state.get("clients", []))
+            headline.append(f"   ⦿ Hotspot “{hs_state.get('ssid')}” · {n} device{'s' if n != 1 else ''}", style="bold cyan")
         self.query_one("#route", Static).update(headline)
 
         # VM card
@@ -619,7 +686,7 @@ class AlfaLink(App):
                     ("Signal", signal_bar(q) if wifi_ok else "—"),
                     ("dBm", f"{v.get('signal')} dBm" if wifi_ok else "—"),
                     ("Band", band(v.get("freq"))),
-                    ("Link", f"↓ {v.get('rx_rate') or '—'}  ↑ {v.get('tx_rate') or '—'}")]
+                    ("Link", "↓ {}  ↑ {}".format(*[(v.get(k) or "—").replace(" MBit/s", " Mb/s") for k in ("rx_rate", "tx_rate")]))]
             status = "ok" if wifi_ok and q >= 35 else "warn"
         else:
             plugged = ", ".join(s.usb_mac.values())
@@ -644,10 +711,34 @@ class AlfaLink(App):
                 ("Traffic", f"↓ {human_rate(s.down)}  ↑ {human_rate(s.up)}")]
         self.query_one("#c-net", Card).show(rows, "ok" if net_ok else "bad")
 
+        hs = v.get("hotspot") or {}
+        clients = hs.get("clients", [])
+        if self.hotspot_pending:
+            rows = [("State", Text(self.hotspot_pending, style="bold cyan")),
+                    ("Name", hs.get("ssid") or "—")]
+            hstatus = "warn"
+        elif hs.get("on"):
+            rows = [("State", Text("on", style="bold green")),
+                    ("Name", hs.get("ssid") or "—"),
+                    ("Channel", str(hs.get("channel") or "—")),
+                    ("Devices", Text(str(len(clients)), style="bold cyan"))]
+            for c in clients[:2]:
+                label = c.get("name") or c.get("ip") or c["mac"]
+                rows.append(("", Text(f"• {label}" + (f"  {c['signal']} dBm" if c.get("signal") else ""), style="grey70")))
+            hstatus = "ok"
+        else:
+            rows = [("State", Text("off", style="bold yellow")),
+                    ("Name", hs.get("ssid") or Text("not set up — press h", style="grey62"))]
+            hstatus = "warn" if hs.get("configured") else "idle"
+        self.query_one("#c-hot", Card).show(rows, hstatus)
+        hb = self.query_one("#b-hotspot", Button)
+        hb.label = "Hotspot OFF" if hs.get("on") else "Hotspot ON"
+        hb.disabled = bool(self.hotspot_pending) or (not wifi_ok and not hs.get("on"))
+
         tb = self.query_one("#b-tunnel", Button)
-        tb.label = "Tunnel OFF  (t)" if s.mac_tunnel else "Tunnel ON  (t)"
+        tb.label = "Tunnel OFF" if s.mac_tunnel else "Tunnel ON"
         tb.variant = "warning" if s.mac_tunnel else "success"
-        self.query_one("#b-vm", Button).label = "Stop VM  (s)" if s.vm_state == "started" else "Start VM  (s)"
+        self.query_one("#b-vm", Button).label = "Stop VM" if s.vm_state == "started" else "Start VM"
         self.query_one("#b-attach", Button).disabled = adapter_ok or s.vm_state != "started"
 
         self.query_one("#ch-lat", Chart).push(lat, f"{lat:.0f} ms" if lat is not None else "no reply")
@@ -739,6 +830,65 @@ class AlfaLink(App):
         else:
             self.call_from_thread(self.log_event, "VM stopped", "ok")
         self.call_from_thread(self.poll)
+
+    # hotspot (runs in the VM on the adapter's radio)
+    def action_hotspot(self) -> None:
+        if "hotspot" in self.busy:
+            self.log_event("Hotspot is still changing — one moment", "warn")
+            return
+        hs = self.state.vm.get("hotspot") or {}
+        if hs.get("on"):
+            n = len(hs.get("clients", []))
+            if n:
+                self.push_screen(ConfirmScreen(f"Turn off the hotspot? {n} device{'s' if n != 1 else ''} will be disconnected."),
+                                 lambda yes: yes and self.hotspot_cmd("off"))
+            else:
+                self.hotspot_cmd("off")
+            return
+        if not self.state.vm.get("ssid"):
+            self.log_event("Connect the adapter to a Wi-Fi network first ([b]w[/]) — the hotspot shares that connection", "warn")
+            return
+        if hs.get("configured"):
+            self.hotspot_cmd("on")
+        else:
+            self.action_hotspot_settings()
+
+    def action_hotspot_settings(self) -> None:
+        if not self.state.vm.get("ssid"):
+            self.log_event("Connect the adapter to a Wi-Fi network first ([b]w[/])", "warn")
+            return
+        name = (self.state.vm.get("hotspot") or {}).get("ssid") or "AlfaLink"
+        self.push_screen(HotspotScreen(name), lambda r: r and self.hotspot_cmd("on", r[0], r[1]))
+
+    @work(thread=True, exclusive=True, group="hotspot")
+    def hotspot_cmd(self, cmd: str, name: str | None = None, password: str = "") -> None:
+        self.busy.add("hotspot")
+        self.hotspot_pending = "starting…" if cmd == "on" else "stopping…"
+        self.call_from_thread(self.render_state)
+        try:
+            self._hotspot_cmd(cmd, name, password)
+        finally:
+            self.busy.discard("hotspot")
+            self.hotspot_pending = None
+            self.call_from_thread(self.poll)
+
+    def _hotspot_cmd(self, cmd: str, name: str | None, password: str) -> None:
+        if cmd == "on":
+            self.call_from_thread(self.log_event, "Starting hotspot…")
+            if password:
+                vm(f"alfa-hotspot off", timeout=20)
+                vm("sudo nmcli con delete alfa-hotspot", timeout=20)   # new name/password → fresh profile
+            arg = f" {shlex.quote(name)}" if name else ""
+            code, out = vm(f"alfa-hotspot on{arg}", timeout=60, stdin=password + "\n")
+        else:
+            self.call_from_thread(self.log_event, "Stopping hotspot…")
+            code, out = vm("alfa-hotspot off", timeout=30)
+        password = ""
+        if code == 0:
+            msg = "Hotspot on — devices can join now" if cmd == "on" else "Hotspot off"
+            self.call_from_thread(self.log_event, msg, "ok")
+        else:
+            self.call_from_thread(self.log_event, f"Hotspot {cmd} failed: {out.splitlines()[-1] if out else code}", "bad")
 
     # tunnel (needs sudo)
     def action_tunnel(self) -> None:

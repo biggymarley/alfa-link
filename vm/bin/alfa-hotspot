@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Run a Wi-Fi hotspot on the USB adapter while it stays connected upstream (repeater).
+
+  alfa-hotspot on [SSID]     password read from stdin (8–63 chars); empty = reuse saved one
+  alfa-hotspot off
+  alfa-hotspot restart       re-create on the current upstream channel (after switching network)
+  alfa-hotspot status        JSON
+
+The hotspot runs on a second virtual interface (ap0) of the same radio, on the upstream
+channel (the chip allows one AP + one client on the same radio). NetworkManager's "shared"
+mode provides DHCP/DNS (dnsmasq) and NAT; /etc/nftables.conf isolates hotspot clients from
+the Mac (wg0/vmnet) and from the VM itself.
+"""
+import json, os, re, subprocess, sys, time
+
+AP_IF, CON = "ap0", "alfa-hotspot"
+SUBNET = "10.77.0.1/24"
+
+
+def sh(cmd, check=False, stdin=None, timeout=40):
+    p = subprocess.run(cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
+                       input=stdin, timeout=timeout)
+    if check and p.returncode != 0:
+        raise SystemExit((p.stderr or p.stdout).strip() or f"failed: {cmd}")
+    return p.stdout.strip()
+
+
+def upstream_iface():
+    for i in sorted(os.listdir("/sys/class/net")):
+        if i.startswith("wl"):
+            return i
+    return None
+
+
+def upstream_link(i):
+    link = sh(["iw", "dev", i, "link"])
+    m = re.search(r"freq: ([\d.]+)", link)
+    return int(float(m.group(1))) if m else None
+
+
+def chan_band(freq):
+    if freq < 3000:
+        return ("bg", 14 if freq == 2484 else (freq - 2407) // 5)
+    if freq < 5950:
+        return ("a", (freq - 5000) // 5)
+    raise SystemExit("The upstream network is on 6 GHz — the hotspot needs a 2.4 or 5 GHz upstream network.")
+
+
+def ap_mac(i):
+    """A distinct, locally administered MAC for ap0 (two interfaces can't share one)."""
+    orig = [int(x, 16) for x in open(f"/sys/class/net/{i}/address").read().strip().split(":")]
+    new = list(orig)
+    new[0] = (orig[0] | 0x02) & 0xFE
+    if new == orig:
+        new[0] ^= 0x04
+    return ":".join(f"{x:02x}" for x in new)
+
+
+def profile_exists():
+    return CON in sh("nmcli -t -f NAME con show").splitlines()
+
+
+def con_state():
+    """'activated', 'activating', 'deactivating' or '' (NetworkManager connection state)."""
+    return sh(["nmcli", "-g", "GENERAL.STATE", "con", "show", CON]) if profile_exists() else ""
+
+
+def active():
+    return con_state() == "activated" and os.path.exists(f"/sys/class/net/{AP_IF}")
+
+
+def ensure_ap_iface(up):
+    if not os.path.exists(f"/sys/class/net/{AP_IF}"):
+        phy = open(f"/sys/class/net/{up}/phy80211/name").read().strip()
+        sh(["iw", "phy", phy, "interface", "add", AP_IF, "type", "__ap"], check=True)
+        sh(["ip", "link", "set", AP_IF, "address", ap_mac(up)])
+    sh(["nmcli", "dev", "set", AP_IF, "managed", "yes"])
+    time.sleep(1)
+
+
+def remove_ap_iface():
+    if os.path.exists(f"/sys/class/net/{AP_IF}"):
+        sh(["iw", "dev", AP_IF, "del"])
+
+
+def start(ssid, password):
+    up = upstream_iface()
+    if not up:
+        raise SystemExit("No USB Wi-Fi adapter in the VM.")
+    freq = upstream_link(up)
+    if not freq:
+        raise SystemExit("The adapter isn't connected to a Wi-Fi network yet — connect it first (it sets the hotspot's channel).")
+    band, chan = chan_band(freq)
+    ensure_ap_iface(up)
+    mac = open(f"/sys/class/net/{AP_IF}/address").read().strip()
+    if not profile_exists():
+        if not ssid or not password:
+            raise SystemExit("First start needs a name and a password.")
+        sh(["nmcli", "con", "add", "type", "wifi", "ifname", AP_IF, "con-name", CON, "autoconnect", "no",
+            "ssid", ssid], check=True)
+    mods = ["802-11-wireless.mode", "ap", "802-11-wireless.band", band, "802-11-wireless.channel", str(chan),
+            "802-11-wireless.cloned-mac-address", mac, "connection.interface-name", AP_IF,
+            "ipv4.method", "shared", "ipv4.addresses", SUBNET, "ipv6.method", "disabled",
+            "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn", "wifi-sec.pairwise", "ccmp",
+            "wifi-sec.group", "ccmp", "wifi-sec.pmf", "disable"]
+    if ssid:
+        mods += ["802-11-wireless.ssid", ssid]
+    sh(["nmcli", "con", "modify", CON, *mods], check=True)
+    if password:   # received on stdin from the Mac; stored only in NetworkManager here
+        sh(["nmcli", "con", "modify", CON, "wifi-sec.psk", password], check=True)
+    out = sh(["nmcli", "-w", "30", "con", "up", CON], timeout=45)
+    for _ in range(10):                      # NM can report success slightly before "activated"
+        if active():
+            break
+        time.sleep(1)
+    if not active():
+        remove_ap_iface()
+        raise SystemExit("Hotspot failed to start: " + (out.splitlines()[-1] if out else "unknown error")
+                         + f" (channel {chan}). Try a different upstream network.")
+    return status()
+
+
+def stop():
+    if active():
+        sh(["nmcli", "con", "down", CON])
+    remove_ap_iface()
+
+
+def clients():
+    leases = {}
+    for path in ("/var/lib/NetworkManager/dnsmasq-ap0.leases", "/var/lib/misc/dnsmasq.leases"):
+        if os.path.exists(path):
+            for line in open(path):
+                f = line.split()
+                if len(f) >= 4:
+                    leases[f[1].lower()] = {"ip": f[2], "name": f[3] if f[3] != "*" else None}
+    out, cur = [], None
+    for line in sh(["iw", "dev", AP_IF, "station", "dump"]).splitlines() if os.path.exists(f"/sys/class/net/{AP_IF}") else []:
+        m = re.match(r"Station ([0-9a-f:]{17})", line)
+        if m:
+            cur = {"mac": m.group(1), **leases.get(m.group(1), {"ip": None, "name": None})}
+            out.append(cur)
+        elif cur and "signal:" in line and "avg" not in line:
+            s = re.search(r"(-?\d+)", line.split("signal:")[1])
+            cur["signal"] = int(s.group(1)) if s else None
+    return out
+
+
+def status():
+    on = active()
+    ssid = sh(["nmcli", "-g", "802-11-wireless.ssid", "con", "show", CON]) if profile_exists() else None
+    chan = None
+    if on:
+        info = sh(["iw", "dev", AP_IF, "info"])
+        m = re.search(r"channel (\d+)", info)
+        chan = int(m.group(1)) if m else None
+    return {"on": on, "state": con_state() or "off", "configured": profile_exists(), "ssid": ssid or None, "channel": chan,
+            "clients": clients() if on else []}
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "status":
+        print(json.dumps(status()))
+    elif cmd == "on":
+        ssid = sys.argv[2] if len(sys.argv) > 2 else None
+        password = sys.stdin.readline().rstrip("\n") if not sys.stdin.isatty() else ""
+        if password and not 8 <= len(password) <= 63:
+            raise SystemExit("The hotspot password must be 8–63 characters.")
+        print(json.dumps(start(ssid, password)))
+    elif cmd == "off":
+        stop()
+        print(json.dumps(status()))
+    elif cmd == "restart":
+        if active() or "--if-active" not in sys.argv:
+            stop()
+            print(json.dumps(start(None, "")))
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        os.execvp("sudo", ["sudo", "-n", sys.executable, *sys.argv])
+    main()

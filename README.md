@@ -22,6 +22,8 @@ macOS has no drivers for these adapters, and Apple Silicon doesn't allow third-p
 Mac apps ──▶ WireGuard tunnel ──▶ Ubuntu VM (UTM) ──▶ USB Wi-Fi adapter ──▶ Wi-Fi network ──▶ Internet
 ```
 
+It can also **share that connection as a Wi-Fi hotspot** ("AlfaLink") broadcast by the adapter itself, so phones, laptops and TVs get internet from the far network too.
+
 It comes with **`alfa`**, a terminal dashboard to pick Wi-Fi networks, switch the tunnel on/off, and watch signal, latency and throughput live.
 
 ```
@@ -92,11 +94,33 @@ Everything can be clicked with the mouse too.
 |---|---|
 | `w` | Wi-Fi picker. Filter by band with `b` / `0` `2` `5` `6`. Enter or a second click connects. `f` forgets a saved network. `r` rescans |
 | `t` | Tunnel on/off. Asks for your Mac password once |
+| `h` | Hotspot on/off. The first time, asks for a name (default **AlfaLink**) and a password. `H` changes them later |
 | `a` | Attach the adapter to the VM |
 | `s` | Start/stop the VM |
 | `p` · `r` · `q` | Refresh public IP · refresh · quit |
 
 Wi-Fi passwords are sent straight to the VM and stored only there. They never touch the Mac's disk.
+
+### Share as a hotspot
+
+The Alfa can stay connected to the far network **and** broadcast its own Wi-Fi at the same time, acting as a repeater:
+
+```
+Phone / laptop / TV ──Wi-Fi──▶ "AlfaLink" (Alfa) ─▶ VM (NAT) ─▶ Alfa ─▶ far Wi-Fi ─▶ Internet
+```
+
+1. Connect the adapter to a network first (`w`). The hotspot shares that connection.
+2. Press `h`, keep or change the name, and choose a password (8–63 characters).
+3. Join "AlfaLink" from your devices. The Hotspot card shows how many are connected and their names.
+
+**Good to know:**
+- The hotspot runs on the **same channel** as the upstream network, because they share one radio. If you switch networks with `w`, it moves along automatically.
+- **Everyone shares the adapter's bandwidth,** including the Mac when the tunnel is on.
+- **Hotspot devices only get internet.** They can't reach your Mac, the Mac's own network, or the VM.
+- The hotspot password is stored only inside the VM.
+- **It stops when the VM stops,** and it's off after a VM restart until you press `h`.
+- **Upstream must be on 2.4 or 5 GHz.** A 6 GHz upstream network can't be repeated.
+- Tested with the Alfa (MT7921AU). Other chips need to support "AP + managed" at the same time (`iw phy` → *valid interface combinations*).
 
 ### Without the dashboard
 
@@ -124,6 +148,8 @@ mac/vpn-off.sh   # tunnel off (back to the Mac's own Wi-Fi)
 | Browser says *DNS address could not be found* | The tunnel is off, or the Mac is still using a cached failure. Turn the tunnel on, then restart the browser. |
 | VM doesn't answer | `s` twice (stop/start), or in UTM: stop, then start `alfa-vm`. |
 | Weak or slow connection | The Signal bar should be above ~40%. Try a 5 GHz network (`w`, then `5`), and point the antenna at the access point. |
+| Hotspot won't start | The adapter must be connected first (`w`). Some 5 GHz channels (DFS/radar) and 6 GHz networks can't host a hotspot, so connect to a 2.4 GHz or another 5 GHz network. |
+| A device can't join the hotspot | Check the password with `H`. Some old devices only see 2.4 GHz, so connect the adapter to a 2.4 GHz network. |
 | Moved the repo folder | Run `./install.sh` again. |
 
 To look inside the VM: `ssh alfa@$(cat ~/.config/alfa-link/vm-ip)`.
@@ -155,7 +181,7 @@ mac/alfa                launcher (linked into Homebrew's bin as `alfa`)
 mac/vpn-on.sh / vpn-off.sh / wifi.sh   command-line versions
 mac/wg-prep.sh          routing fix-up run by wg-quick
 vm/setup-vm.sh          configures the VM (run by install.sh over SSH)
-vm/bin/                 alfa-up, alfa-status, alfa-scan, alfa-connect (installed in the VM)
+vm/bin/                 alfa-up, alfa-status, alfa-scan, alfa-connect, alfa-hotspot (installed in the VM)
 vm/etc/                 firewall, network, Bluetooth-block configs
 vm/cloud-init/          first-boot config for the VM
 ```
