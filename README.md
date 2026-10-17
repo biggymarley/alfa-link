@@ -1,5 +1,13 @@
 # ALFA LINK
 
+## 🤖 Built entirely with [Claude Code](https://claude.com/claude-code)
+
+> **Every part of this project was built with Claude Code:** the VM setup, the debugging of macOS networking, the WireGuard tunnel, the terminal dashboard, the installer and these docs. They were made in a conversation between a human and an AI agent working directly on a Mac.
+
+[![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?style=for-the-badge)](https://claude.com/claude-code)
+
+---
+
 Use a **Linux-only USB Wi-Fi adapter** (like the **Alfa AWUS036AXML**) as the internet connection of an **Apple Silicon Mac** — for every app, not just the browser.
 
 macOS has no drivers for these adapters, and Apple Silicon doesn't allow third-party kernel drivers. ALFA LINK works around that: a small Ubuntu VM runs the adapter with Linux's built-in driver, and the Mac sends all its traffic to that VM through a WireGuard tunnel.
