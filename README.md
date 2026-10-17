@@ -43,6 +43,8 @@ Other adapters with a built-in Linux driver (mt76, rtw88 families) will probably
 
 ## Install
 
+> **Early release.** Every step of `install.sh` was worked out and verified by hand on a Mac mini M4 (macOS 26, UTM 5), but the script itself hasn't yet been run end to end on a fresh Mac. If anything fails, please [open an issue](https://github.com/biggymarley/alfa-link/issues) with the step it stopped at and its output. Re-running `./install.sh` after a fix is safe.
+
 ```bash
 git clone https://github.com/biggymarley/alfa-link.git
 cd alfa-link
