@@ -1,0 +1,20 @@
+#!/bin/bash
+# alfa-connect "<SSID>"  — password (if any) is read from stdin; empty = open/saved network.
+SSID="$1"; IFS= read -r PASS || true
+I=$(basename "$(compgen -G '/sys/class/net/wl*' | head -1)" 2>/dev/null); [ "$I" = . ] && I=""
+[ -z "$I" ] && { echo "No USB Wi-Fi adapter in the VM"; exit 2; }
+sudo nmcli dev set "$I" managed yes
+if [ -z "$PASS" ] && nmcli -t -f NAME con show | grep -Fxq "$SSID"; then
+  sudo nmcli -w 30 con up "$SSID" ifname "$I" || exit 3
+else
+  sudo nmcli con delete "$SSID" >/dev/null 2>&1
+  if [ -z "$PASS" ]; then sudo nmcli -w 30 dev wifi connect "$SSID" ifname "$I" || exit 3
+  else sudo nmcli -w 30 dev wifi connect "$SSID" password "$PASS" ifname "$I" || exit 3; fi
+fi
+unset PASS
+sudo nmcli con modify "$SSID" connection.autoconnect yes connection.autoconnect-retries 0
+nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless"{print $1}' | while read -r o; do
+  if [ "$o" != "$SSID" ]; then sudo nmcli con modify "$o" connection.autoconnect no; fi
+done
+for _ in 1 2 3 4 5; do ping -c1 -W3 -I "$I" 1.1.1.1 >/dev/null 2>&1 && { echo "online"; exit 0; }; sleep 1; done
+echo "connected but no internet"; exit 4

@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Scan with the USB Wi-Fi adapter and print networks as JSON."""
+import json, os, subprocess, sys, time
+def sh(c, t=20): return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=t).stdout
+ifaces = [i for i in os.listdir("/sys/class/net") if i.startswith("wl")]
+if not ifaces: print(json.dumps({"error": "no adapter"})); sys.exit(0)
+i = ifaces[0]
+sh(f"sudo nmcli dev set {i} managed yes")
+if "--cached" not in sys.argv:
+    sh(f"sudo nmcli dev wifi rescan ifname {i}"); time.sleep(4)
+saved = set(sh("nmcli -t -f NAME,TYPE con show | awk -F: '$2==\"802-11-wireless\"{print $1}'").splitlines())
+nets = {}
+for line in sh(f"nmcli -t -e yes -f IN-USE,SSID,SIGNAL,FREQ,CHAN,SECURITY dev wifi list ifname {i}").splitlines():
+    parts, cur, esc = [], "", False
+    for ch in line:
+        if esc: cur += ch; esc = False
+        elif ch == "\\": esc = True
+        elif ch == ":": parts.append(cur); cur = ""
+        else: cur += ch
+    parts.append(cur)
+    inuse, ssid, sig, freq, chan, sec = (parts + [""] * 6)[:6]
+    if not ssid: continue
+    n = {"ssid": ssid, "signal": int(sig or 0), "freq": int(freq.split()[0] or 0), "chan": chan,
+         "security": sec if sec not in ("", "--") else "", "saved": ssid in saved, "active": inuse.strip() == "*"}
+    if ssid not in nets or n["signal"] > nets[ssid]["signal"] or n["active"]:
+        n["active"] = n["active"] or nets.get(ssid, {}).get("active", False)
+        nets[ssid] = n
+for ssid in saved - set(nets):
+    nets[ssid] = {"ssid": ssid, "signal": 0, "freq": 0, "chan": "", "security": "saved", "saved": True, "active": False, "out_of_range": True}
+print(json.dumps({"iface": i, "networks": sorted(nets.values(), key=lambda n: (-n["active"], -n["signal"]))}))

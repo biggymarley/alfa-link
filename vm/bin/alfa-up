@@ -1,0 +1,91 @@
+#!/bin/bash
+# Runs INSIDE the VM (installed as /usr/local/bin/alfa-up).
+# Usage: alfa-up            — scan and pick a network from a numbered list
+#        alfa-up "<SSID>"   — connect to that network directly
+# The password is typed at a prompt and only stored by NetworkManager in the VM.
+set -euo pipefail
+
+IFACE=""
+for i in $(seq 1 15); do
+  IFACE=$(compgen -G '/sys/class/net/wl*' | head -1 | xargs -r basename || true)
+  [ -n "$IFACE" ] && break
+  sleep 1
+done
+if [ -z "$IFACE" ]; then
+  echo "No USB Wi-Fi adapter found in the VM."
+  echo "Plug it in, then on the Mac press a in the alfa dashboard (or run mac/wifi.sh) to pass it through"
+  lsusb | grep -viE 'qemu|root hub' || true
+  sudo dmesg | grep -iE 'mt79|mt7921|rtw' | tail -10
+  exit 1
+fi
+sudo nmcli dev set "$IFACE" managed yes
+
+SSID="${1:-}"
+if [ -z "$SSID" ]; then
+  while true; do
+    echo "Scanning with $IFACE..."
+    sudo nmcli dev wifi rescan ifname "$IFACE" 2>/dev/null || true
+    sleep 4
+    mapfile -t ROWS < <(nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list ifname "$IFACE" \
+      | awk -F: '$1!="" && !seen[$1]++' | sort -t: -k2 -nr)
+    echo
+    if [ ${#ROWS[@]} -eq 0 ]; then
+      echo "  No networks found."
+    else
+      printf "  %-3s %-32s %-7s %s\n" "#" "NETWORK" "SIGNAL" "SECURITY"
+      for i in "${!ROWS[@]}"; do
+        IFS=: read -r s sig sec <<<"${ROWS[$i]}"
+        printf "  %-3s %-32s %-7s %s\n" "$((i+1))" "$s" "$sig%" "${sec:-open}"
+      done
+    fi
+    echo
+    read -r -p "Pick a number (r = rescan, q = quit): " N || exit 1
+    case "$N" in
+      r|R) echo; continue ;;
+      q|Q) exit 0 ;;
+    esac
+    if [[ "$N" =~ ^[0-9]+$ ]] && [ "$N" -ge 1 ] && [ "$N" -le ${#ROWS[@]} ]; then break; fi
+    echo "Invalid choice."; echo
+  done
+  IFS=: read -r SSID _ SEC <<<"${ROWS[$((N-1))]}"
+else
+  SEC=$(nmcli -t -f SSID,SECURITY dev wifi list ifname "$IFACE" | awk -F: -v s="$SSID" '$1==s{print $2; exit}')
+fi
+
+SAVED=no
+nmcli -t -f NAME con show | grep -Fxq "$SSID" && SAVED=yes
+
+if [ "$SAVED" = yes ]; then
+  echo "Using saved settings for \"$SSID\"..."
+  if ! sudo nmcli con up "$SSID" ifname "$IFACE"; then
+    echo "Saved settings failed; enter the password again."
+    sudo nmcli con delete "$SSID" >/dev/null 2>&1 || true
+    SAVED=no
+  fi
+fi
+
+if [ "$SAVED" = yes ]; then
+  :
+elif [ -z "${SEC:-}" ] || [ "$SEC" = "--" ]; then
+  echo "Connecting to open network \"$SSID\"..."
+  sudo nmcli dev wifi connect "$SSID" ifname "$IFACE"
+else
+  read -r -s -p "Password for \"$SSID\": " PASS; echo
+  sudo nmcli dev wifi connect "$SSID" password "$PASS" ifname "$IFACE"
+  unset PASS
+fi
+sudo nmcli con modify "$SSID" connection.autoconnect yes connection.autoconnect-retries 0
+# Only the chosen network may auto-connect; others stay saved but won't take over if this one drops.
+nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless"{print $1}' | while read -r other; do
+  if [ "$other" != "$SSID" ]; then sudo nmcli con modify "$other" connection.autoconnect no; fi
+done
+
+echo
+echo "== Checking internet through $IFACE"
+if ping -c3 -W3 -I "$IFACE" 1.1.1.1 >/dev/null; then
+  echo "✅ Online via \"$SSID\""
+else
+  echo "❌ Connected to \"$SSID\" but no internet through it"
+fi
+ip route show default | head -1
+iw dev "$IFACE" link | grep -E 'signal|tx bitrate' || true

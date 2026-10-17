@@ -1,0 +1,18 @@
+#cloud-config
+hostname: alfa-vm
+users:
+  - name: alfa
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+package_update: true
+packages:
+  - network-manager
+  - wireless-tools
+  - iw
+  - usbutils
+  - nftables
+  - linux-firmware
+runcmd:
+  - systemctl enable --now NetworkManager

@@ -1,0 +1,14 @@
+# vmnet (Mac <-> VM) link: keep it for SSH/tunnel, but never use it for DNS, IPv6,
+# or as the preferred default route — the USB Wi-Fi adapter carries the traffic.
+network:
+  version: 2
+  ethernets:
+    vmnet:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp4-overrides:
+        route-metric: 1000
+        use-dns: false
+      dhcp6: false
+      accept-ra: false

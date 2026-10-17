@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Print VM / adapter / tunnel status as JSON (used by the Mac dashboard)."""
+import json, os, re, subprocess, time
+
+def sh(cmd, timeout=4):
+    try:
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout).stdout.strip()
+    except subprocess.TimeoutExpired:
+        return ""
+
+ADAPTERS = {"0e8d:7961": "Alfa AWUS036AXML", "2001:331c": "D-Link DWA-182"}
+out = {"time": time.time(), "uptime": float(open("/proc/uptime").read().split()[0])}
+
+ifaces = [i for i in os.listdir("/sys/class/net") if i.startswith("wl")]
+iface = ifaces[0] if ifaces else None
+out["iface"] = iface
+usb = sh("timeout 3 lsusb").lower()
+out["usb"] = next((k for k in ADAPTERS if k in usb), None)
+out["adapter"] = ADAPTERS.get(out["usb"])
+
+if iface:
+    st = f"/sys/class/net/{iface}/statistics"
+    out["rx_bytes"] = int(open(f"{st}/rx_bytes").read())
+    out["tx_bytes"] = int(open(f"{st}/tx_bytes").read())
+    link = sh(f"iw dev {iface} link")
+    m = lambda p: (re.search(p, link) or [None, None])[1]
+    out["ssid"] = m(r"SSID: (.+)")
+    out["signal"] = int(m(r"signal: (-?\d+)") or 0) or None
+    out["freq"] = int(float(m(r"freq: ([\d.]+)") or 0)) or None
+    out["rx_rate"] = m(r"rx bitrate: ([\d.]+ MBit/s)")
+    out["tx_rate"] = m(r"tx bitrate: ([\d.]+ MBit/s)")
+    out["ip"] = sh(f"ip -4 -o addr show {iface} | awk '{{print $4}}'") or None
+    default = sh("ip route show default | head -1")
+    out["default_via_wl"] = f" dev {iface}" in default
+    out["gateway"] = (re.search(r"via (\S+)", default) or [None, None])[1] if out["default_via_wl"] else None
+    if out["default_via_wl"]:
+        p = sh(f"ping -n -c1 -W2 -I {iface} 1.1.1.1", timeout=4)
+        lat = re.search(r"time=([\d.]+)", p)
+        out["ping_ms"] = float(lat.group(1)) if lat else None
+
+wg = {"up": False}
+dump = sh("sudo -n wg show wg0 dump")
+lines = dump.splitlines()
+if lines:
+    wg["up"] = True
+    if len(lines) > 1:
+        f = lines[1].split("\t")
+        wg.update(endpoint=f[2] if f[2] != "(none)" else None, handshake=int(f[4]), rx=int(f[5]), tx=int(f[6]))
+out["wg"] = wg
+print(json.dumps(out))

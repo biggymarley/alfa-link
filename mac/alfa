@@ -1,0 +1,4 @@
+#!/bin/bash
+# Launch the ALFA LINK dashboard.
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec "${ALFA_LINK_HOME:-$HOME/.config/alfa-link}/venv/bin/python" "$DIR/alfa_tui.py" "$@"

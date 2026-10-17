@@ -1,0 +1,20 @@
+# Local state & secrets (install.sh keeps these in ~/.config/alfa-link, but just in case)
+*.key
+*.pub
+wg/
+alfa.conf
+vm-ip
+.vm-ip
+# VM images / build artifacts
+*.img
+*.qcow2
+*.iso
+build/
+seed/
+# Python / OS
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.svg.png
